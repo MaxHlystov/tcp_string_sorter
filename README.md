@@ -4,7 +4,7 @@
 
 It receives strings with zero on the end, sorts chars in it by descending of ASCII-codes, and sends sorted string back with zero on the end.
 
-Connection with client finishes and server stopped work if it gives '**OFF\0**' string.
+Connection with client finishes and server stopped work if it gives 'OFF' string.
 
 To start server used:
 
@@ -19,4 +19,5 @@ Server is not daemon. If you want to start it in background use &:
 	`tcp_string_sorter port_number &`
 	
 For example:
+
 	`tcp_string_sorter 55555 &`
