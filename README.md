@@ -1,6 +1,6 @@
 ## tcp_string_sorter
 
-*It is single flow version of server* which sorts incoming characters.
++It is single flow version of server which sorts incoming characters.+
 
 It receives strings with zero on the end, sorts chars in it by descending of ASCII-codes, and sends sorted string back with zero on the end.
 
