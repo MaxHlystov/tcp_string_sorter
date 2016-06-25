@@ -1,4 +1,4 @@
-# tcp_string_sorter in single flow version
+# **tcp_string_sorter** in single flow version
 
 It is simple TCP server to sort incoming characters.
 It receives strings with zero on the end,
