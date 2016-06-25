@@ -1,15 +1,10 @@
-/*Разработайте TCP сервер, предназначенный для сортировки символов
-в строке. Сервер получает на вход строки, оканчивающиеся
-символом '\0', сортирует в них символы в порядке убывания ASCII-кодов
-и отсылает обратно на клиент, в виде строки заканчивающейся '\0'.
-Завершение работы сервера происходит после получения строки,
-содержащей только 'OFF'. 
-
-При старте сервер получает на вход номер порта в качестве параметра
-командной строки. bind производится на адресе 127.0.0.1
-
-Пример вызова
-./solution 13555
+/*This TCP server, is used to sort characters in string.
+Server gets string ended with zero, and sort them by descending of ASCII-codes,
+And sends them back to client as a strings with ended zero.
+Server stops working by receive 'OFF' string. 
+It works on local host address. You need to specify a port to listen by
+fist argument when you start server:
+tcp_string_sorter 55555
 */
 
 #define _POSIX_C_SOURCE 199310L
