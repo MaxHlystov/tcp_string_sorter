@@ -2,9 +2,9 @@
 
 It is simple TCP server to sort incoming characters. It receives strings with zero on the end, sorts chars in it by descending of ASCII-codes, and sends sorted string back with zero on the end.
 
-Connection with client finished if server gives '*OFF*' string.
+Connection with client finished if server gives '*OFF*' string (with zero on the end).
 
-To stopp server send to it string '*STOP*'.
+To stopp server send to it string '*STOP*' (with zero on the end).
 
 To start server used:
 
