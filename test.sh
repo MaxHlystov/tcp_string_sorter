@@ -11,7 +11,7 @@ do
 done
 echo "Info: Use server port ${PORT}"
 
-./tcp_string_sorter $PORT & &> server.log
+./tcp_string_sorter $PORT & &> /dev/null
 PID=$!
 echo "Info: Server started with PID ${PID}"
 
