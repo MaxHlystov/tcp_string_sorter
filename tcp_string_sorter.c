@@ -1,4 +1,3 @@
-#include "lib_solution.h"
 #include "tcp_string_sorter.h"
 
 

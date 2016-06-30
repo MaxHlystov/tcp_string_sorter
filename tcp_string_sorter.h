@@ -20,9 +20,11 @@ See also test.sh script.
 
 #ifndef __TCP_SORT_SERVER
 #define __TCP_SORT_SERVER
-
-	#define _POSIX_C_SOURCE 199310L
-		
+	
+	#ifndef _POSIX_C_SOURCE
+		#define _POSIX_C_SOURCE 199310L
+	#endif
+	
 	#include <sys/types.h>
 	#include <sys/stat.h>
 	#include <sys/socket.h>
