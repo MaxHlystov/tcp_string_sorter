@@ -6,7 +6,6 @@
 *.exe
 *.o
 *.so
-tcp_string_sorter.
 
 # Packages #
 ############
