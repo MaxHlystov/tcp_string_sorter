@@ -38,7 +38,7 @@ See also test.sh script.
 	#include <string.h>
 	#include <limits.h>
 
-	#include "tcp_string_sorter.h"
+	#include "lib_solution.h"
 
 	
 	#define MAX_BUF 512
