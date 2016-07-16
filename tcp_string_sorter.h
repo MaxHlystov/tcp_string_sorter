@@ -21,37 +21,86 @@ See also test.sh script.
 #ifndef __TCP_SORT_SERVER
 #define __TCP_SORT_SERVER
 	
-	#ifndef _POSIX_C_SOURCE
-		#define _POSIX_C_SOURCE 199310L
-	#endif
-	
-	#include <sys/types.h>
-	#include <sys/stat.h>
-	#include <sys/socket.h>
-	#include <arpa/inet.h>
-	#include <netdb.h>
-	#include <fcntl.h>
-	#include <unistd.h>
-	#include <stdio.h>
-	#include <stdlib.h>
-	#include <ctype.h>
-	#include <string.h>
-	#include <limits.h>
-
-	#include "lib_solution.h"
-
-	
+	#define MAX_EVENTS 100
 	#define MAX_BUF 512
+	#define WAIT_TIMEOUT -1
 	#define DBG 0
 
+	const int sort_end = UCHAR_MAX; // max index in sort array
+	
+	struct socket_descr {
+		int fd; // socket descriptor
+		struct sockaddr_in cl_addr; // IP address
+		socklen_t cl_addr_len; // length of IP address
+		
+		struct sort_context* context; // for server listen socket == NULL
+	};
+	
+	struct sort_context{
+		int proc_res; // result of processing
+		
+		unsigned int sort[UCHAR_MAX+1]; // sort array
+		char buf[MAX_BUF]; // recieve buffer
+		char send_buf[MAX_BUF]; // send buffer
+		
+		int buf_idx; // index in buffer, used while sort data
+		int	sort_idx; // index in sort, used while prepare send_buf to send
+		int snd_len; // length of the send buffer
+		ssize_t rb; // count of have read bytes
+		ssize_t pos_send; // count of have sent bytes
+		int state; // state of poscess
+		int flStartOfTheString; // it is start of the string
+		int continue_listen;
+	};
+	
 	// process states
 	enum States {
 		  SInit // init data to read
 		, SReadToBuf // 1 read data from 
 		, SCheckEnd // 1.5 check if recieved "OFF" message
 		, SSortBuf // 2 sort data in buf
-		, SFillBufFomSort // 3 fill bufer to send
+		, SFillBufFromSort // 3 fill bufer to send
 		, SSendBuf // 5 send buf to client
 	};
 
+	// runs string-sorter server listens on the port
+	int runServer(int port);
+	
+	// create and initialize sort context
+	struct sort_context* CreateSortContext();
+
+	// create struct with socket description
+	struct socket_descr* AddSocketDescr(int fd, struct sockaddr_in* cl_addr, socklen_t cl_addr_len, int create_sort_context);
+	
+	// remove descriptor from epoll and dlist and close socket. frees sort context and socket description
+	// returns next node if exists, or NULL
+	struct node* RemoveSocket(struct node** head, int epfd, struct socket_descr* skd);
+	
+	// close all clients and server socket, close epoll descriptor
+	void RemoveAllConnections(int epfd, struct node** head);
+	
+	// event_code {EPOLLIN, EPOLLOUT, EPOLLPRI}
+	int AddEvent(struct node** head, int epfd, int event_code, struct socket_descr* skd);
+	
+	// init client context.
+	// process client buffers (sort of fill for send)
+	// stop working, if recieve "OFF" string
+	// return:
+	//   > 0 if server should close connection with client (received OFF signal);
+	//	 == 0 if server need to continue listening to client;
+	//   < 0 if server need to end working (received STOP message)
+	int process_client(struct socket_descr* skd);
+	
+	// read data from client
+	// return:
+	//	>= 0 if server needs to continue working with client;
+	//	< 0 if server should close connection with client
+	int process_client_read(struct socket_descr* skd);
+	
+	// write data to client
+		// return:
+	//	>= 0 if server needs to continue working with client;
+	//	< 0 if server should close connection with client
+	int process_client_write(struct socket_descr* skd);
+	
 #endif

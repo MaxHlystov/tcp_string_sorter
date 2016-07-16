@@ -2,14 +2,14 @@
 
 
 //display the list
-void printList(struct node *head){
-   struct node *ptr = head;
+void printList(struct node** head){
+   struct node *ptr = *head;
    printf("\n[ ");
 	
    //start from the beginning
    while(ptr != NULL)
 	{        
-	  printf("(%d,%d) ",ptr->key,ptr->data);
+	  printf("(%d,%p) ",ptr->key,ptr->data);
 	  ptr = ptr->next;
    }
 	
@@ -17,7 +17,7 @@ void printList(struct node *head){
 }
 
 //insert link at the first location
-void insertFirst(struct node *head, int key, int data){
+void push(struct node** head, int key, void* data){
    //create a link
    struct node *link = (struct node*) malloc(sizeof(struct node));
 	
@@ -25,38 +25,37 @@ void insertFirst(struct node *head, int key, int data){
    link->data = data;
 	
    //point it to old first node
-   link->next = head;
+   link->next = *head;
 	
    //point first to new first node
-   head = link;
+   *head = link;
 }
 
 //delete first item
-struct node* deleteFirst(struct node *head)
+struct node* pop(struct node** head)
 {
 
    //save reference to first link
-   struct node *tempLink = head;
+   struct node *tempLink = *head;
 	
    //mark next to first link as first 
-   head = head->next;
-	
-   //return the deleted link
+   *head = (*head)->next;
+   
    return tempLink;
 }
 
 //is list empty
-bool isEmpty(struct node *head)
+bool isEmpty(struct node** head)
 {
-   return head == NULL;
+   return *head == NULL;
 }
 
-int length(struct node *head)
+int length(struct node** head)
 {
    int length = 0;
    struct node *current;
 	
-   for(current = head; current != NULL; current = current->next)
+   for(current = *head; current != NULL; current = current->next)
 	{
 	  length++;
    }
@@ -65,10 +64,10 @@ int length(struct node *head)
 }
 
 //find a link with given key
-struct node* find(struct node *head, int key){
+struct node* find(struct node **head, int key){
 
    //start from the first link
-   struct node* current = head;
+   struct node* current = *head;
 
    //if list is empty
    if(head == NULL)
@@ -93,14 +92,14 @@ struct node* find(struct node *head, int key){
 }
 
 //delete a link with given key
-struct node* delete(struct node *head, int key){
+struct node* deleteNode(struct node **head, int key){
 
    //start from the first link
-   struct node* current = head;
+   struct node* current = *head;
    struct node* previous = NULL;
 	
    //if list is empty
-   if(head == NULL){
+   if(*head == NULL){
 	  return NULL;
    }
 
@@ -120,9 +119,9 @@ struct node* delete(struct node *head, int key){
    }
 
    //found a match, update the link
-   if(current == head) {
+   if(current == (*head)) {
 	  //change first to point to next link
-	  head = head->next;
+	  *head = (*head)->next;
    }else {
 	  //bypass the current link
 	  previous->next = current->next;
@@ -132,6 +131,15 @@ struct node* delete(struct node *head, int key){
 }
 
 
+#ifdef WIN32
+static int set_nonblock(SOCKET fd){
+    ULONG nonblocking_flag = 1;
+    if (ioctlsocket(fd, FIONBIO, &nonblocking_flag) == 0)
+        return 1;
+    else 
+        return -1;
+}
+#else
 int set_nonblock(int fd){
 	int flags;
 	#if defined(O_NONBLOCK)
@@ -144,4 +152,5 @@ int set_nonblock(int fd){
 		return ioctl(fd, FIOBIO, &flags);
 	#endif
 }
+#endif
 

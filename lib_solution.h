@@ -15,33 +15,32 @@ Some auxilary function.
 	#include <fcntl.h>
 	
 	
-	struct node  
-	{
-	   int data;
+	struct node {
+	   void* data;
 	   int key;
 	   struct node *next;
 	};
 
 	//display the list
-	void printList(struct node *head);
+	void printList(struct node **head);
 	
 	//insert link at the first location
-	void insertFirst(struct node *head, int key, int data);
+	void push(struct node **head, int key, void* data);
 
 	//delete first item
-	struct node* deleteFirst(struct node *head);
+	struct node* pop(struct node **head);
 
 	//is list empty
-	bool isEmpty(struct node *head);
+	bool isEmpty(struct node **head);
 
 	// the length on the list
-	int length(struct node *head);
+	int length(struct node **head);
 
 	//find a link with given key
-	struct node* find(struct node *head, int key);
+	struct node* find(struct node **head, int key);
 
 	//delete a link with given key
-	struct node* delete(struct node *head, int key);
+	struct node* deleteNode(struct node **head, int key);
 
 	// set descriptor nonblock
 	int set_nonblock(int fd);
