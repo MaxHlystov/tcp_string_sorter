@@ -23,13 +23,14 @@ See also test.sh script.
 	
 	#define MAX_EVENTS 100
 	#define MAX_BUF 512
-	#define WAIT_TIMEOUT 0
+	#define WAIT_TIMEOUT -1
 	#define DBG 1
 
 	const int sort_end = UCHAR_MAX; // max index in sort array
 	
 	struct socket_descr {
 		int fd; // socket descriptor
+		int events; //epoll events assigning for socket (EPOLLIN, EPOLLUOUT)
 		struct sockaddr_in cl_addr; // IP address
 		socklen_t cl_addr_len; // length of IP address
 		
@@ -70,7 +71,7 @@ See also test.sh script.
 	struct sort_context* CreateSortContext();
 
 	// create struct with socket description
-	struct socket_descr* AddSocketDescr(int fd, struct sockaddr_in* cl_addr, socklen_t cl_addr_len, int create_sort_context);
+	struct socket_descr* AddSocketDescr(struct node** head, int fd, struct sockaddr_in* cl_addr, socklen_t cl_addr_len, int create_sort_context);
 	
 	// remove descriptor from epoll and dlist and close socket. frees sort context and socket description
 	// returns next node if exists, or NULL
@@ -79,8 +80,13 @@ See also test.sh script.
 	// close all clients and server socket, close epoll descriptor
 	void RemoveAllConnections(int epfd, struct node** head);
 	
+	// Add or modify epoll event type
 	// event_code {EPOLLIN, EPOLLOUT, EPOLLPRI}
-	int AddEvent(struct node** head, int epfd, int event_code, struct socket_descr* skd);
+	// flAMR -
+	//	0 - Add new event and set it event type;
+	//	1 - Modify event, by adding new event type;
+	//	2 - Remove event type, but not event
+	int SetEventType(int epfd, int event_code, struct socket_descr* skd, int flAMR);
 	
 	// init client context.
 	// process client buffers (sort of fill for send)
@@ -89,7 +95,7 @@ See also test.sh script.
 	//   > 0 if server should close connection with client (received OFF signal);
 	//	 == 0 if server need to continue listening to client;
 	//   < 0 if server need to end working (received STOP message)
-	int process_client(struct socket_descr* skd);
+	int process_client(int epfd, struct socket_descr* skd);
 	
 	// read data from client
 	// return:
@@ -101,6 +107,6 @@ See also test.sh script.
 		// return:
 	//	>= 0 if server needs to continue working with client;
 	//	< 0 if server should close connection with client
-	int process_client_write(struct socket_descr* skd);
+	int process_client_write(int epfd, struct socket_descr* skd);
 	
 #endif

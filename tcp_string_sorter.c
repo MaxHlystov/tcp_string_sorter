@@ -42,7 +42,7 @@ struct sort_context* CreateSortContext(){
 }
 
 
-struct socket_descr* AddSocketDescr(int fd, struct sockaddr_in* cl_addr,
+struct socket_descr* AddSocketDescr(struct node** head, int fd, struct sockaddr_in* cl_addr,
 			socklen_t cl_addr_len, int create_sort_context)
 {
 	#ifdef DBG
@@ -61,22 +61,51 @@ struct socket_descr* AddSocketDescr(int fd, struct sockaddr_in* cl_addr,
 	else
 		skd->context = NULL;
 	
+	push(head, skd->fd, skd);
+	
 	return skd;
 }
 
 
-int AddEvent(struct node** head, int epfd, int event_code, struct socket_descr* skd){
+int SetEventType(int epfd, int event_code, struct socket_descr* skd, int flAMR){
 	#ifdef DBG
-		printf("Add event #%d with code %d\n", skd->fd, event_code);
+		printf("Set event for socket %d with code %d\n", skd->fd, event_code);
 	#endif
 	
+	// if event code has been set, do nothing
+	if(((skd->events & event_code) > 0) == (flAMR != 2)){
+		#ifdef DBG
+			printf("Event has been set\n");
+		#endif
+		return 0;
+	}
+	
 	struct epoll_event event;
-	event.events = event_code;
 	event.data.ptr = skd;
 	
-	push(head, skd->fd, skd);
+	int op;
 	
-	return epoll_ctl(epfd, EPOLL_CTL_ADD, skd->fd, &event);
+	if(flAMR == 0) {
+		// Add new event
+		skd->events = event_code;
+		op = EPOLL_CTL_ADD;
+	}
+	else{
+		op = EPOLL_CTL_MOD;
+		
+		if(flAMR == 1){
+			// Modify event type
+			skd->events += event_code;
+		}
+		else {
+			// Remove event type
+			skd->events -= event_code;
+		}
+	}
+	
+	event.events = skd->events;
+	
+	return epoll_ctl(epfd, op, skd->fd, &event);
 }
 
 
@@ -157,7 +186,7 @@ void RemoveAllConnections(int epfd, struct node** head){
 // return:
 //	0 if server need to continue listen to new clients
 //	< 0 if server need to end working (received STOP message)
-int process_client(struct socket_descr* skd){
+int process_client(int epfd, struct socket_descr* skd){
 	struct sort_context* sc = skd->context;
 	#ifdef DBG
 		printf("Process socket %d. Sort end %d; sort size %lu\n", skd->fd, sort_end, sizeof(sc->sort));
@@ -267,12 +296,14 @@ int process_client(struct socket_descr* skd){
 		}
 		
 		#ifdef DBG
-			printf("We filled sort array. Send it.\n");
+			printf("We filled sort array. Send it. Add socket to epoll out events.\n");
 		#endif
 		
 		if(sc->snd_len < MAX_BUF) sc->send_buf[sc->snd_len] = '\0';
 		sc->state = SSendBuf;
 		sc->pos_send = 0;
+		
+		SetEventType(epfd, EPOLLOUT, skd, 1); // add to epoll out events
 		
 		break;
 	}
@@ -333,7 +364,7 @@ int process_client_read(struct socket_descr* skd){
 }
 
 
-int process_client_write(struct socket_descr* skd){
+int process_client_write(int epfd, struct socket_descr* skd){
 	struct sort_context* sc = skd->context;
 	#ifdef DBG
 		printf("process_client_write #%d, continue flag %d, state: %d\n",
@@ -350,7 +381,8 @@ int process_client_write(struct socket_descr* skd){
 	#endif
 	
 	if(sc->pos_send < sc->snd_len){
-		int sent_cnt = send(skd->fd, sc->send_buf + sc->pos_send, sc->snd_len, 0);
+		int sent_cnt =
+			send(skd->fd, sc->send_buf + sc->pos_send, sc->snd_len, 0);
 		if(sent_cnt < 0){
 			if(sent_cnt == 0 || errno == EAGAIN) return 0; // try later
 			sc->continue_listen = 0;
@@ -365,11 +397,14 @@ int process_client_write(struct socket_descr* skd){
 	
 	if(sc->pos_send >= sc->snd_len){
 		#ifdef DBG
-			printf("Sent all data\n");
+			printf("Sent all data. Remove socket from epoll out events.\n");
 		#endif
 		
 		sc->snd_len = 0;
 		sc->state = SInit;
+		
+		// remove from epoll out events
+		SetEventType(epfd, EPOLLOUT, skd, 2); 
 	}
 	return 0;
 }
@@ -415,8 +450,8 @@ int runServer(int port){
 	
 	// add server description to epoll
 	struct socket_descr* server_skd =
-		AddSocketDescr(sfd, &serveraddr, sizeof(serveraddr), 0);
-	AddEvent(&dlist, epfd, EPOLLIN, server_skd);
+		AddSocketDescr(&dlist, sfd, &serveraddr, sizeof(serveraddr), 0);
+	SetEventType(epfd, EPOLLIN, server_skd, 0);
 	
 	#ifdef DBG
 		printf("Created and added server socket\n");
@@ -436,15 +471,13 @@ int runServer(int port){
 	socklen_t cl_addr_len;
 	struct socket_descr* skd = NULL;
 	int res = 0;
-	int clientsForProcess = 0;
 
 	#ifdef DBG
 		printf("Start server cicle\n");
 	#endif
 	
 	while(1){
-		int wait_timeout = clientsForProcess > 0 ? WAIT_TIMEOUT : -1;
-		int num = epoll_wait(epfd, events, MAX_EVENTS, wait_timeout);
+		int num = epoll_wait(epfd, events, MAX_EVENTS, WAIT_TIMEOUT);
 		if(num < 0){
 			perror("Epoll wait");
 			return -1;
@@ -477,9 +510,9 @@ int runServer(int port){
 					set_nonblock(fd);
 					
 					// add server description to dlist
-					skd = AddSocketDescr(fd, &cl_addr, cl_addr_len, 1);
+					skd = AddSocketDescr(&dlist, fd, &cl_addr, cl_addr_len, 1);
 					// add epoll wait for read from client
-					AddEvent(&dlist, epfd, EPOLLIN + EPOLLOUT, skd);
+					SetEventType(epfd, EPOLLIN, skd, 0);
 				}
 			}
 			else {
@@ -487,6 +520,22 @@ int runServer(int port){
 					printf("Epoll event %d\n", events[i].events);
 				#endif
 				
+				// Write events
+				if(events[i].events & EPOLLOUT){
+					#ifdef DBG
+						printf("Try to write to socket %d\n", fd);
+					#endif
+					
+					// client ready to read data from us
+					res = process_client_write(epfd, skd);
+					if(res < 0){ // error
+						if(DBG)
+							printf("Error writing to socket #%d. Remove it.\n", fd);
+						RemoveSocket(&dlist, epfd, skd);
+					}
+				}
+				
+				// Read events
 				if(events[i].events & EPOLLIN){
 					#ifdef DBG
 						printf("Try to read from socket %d\n", fd);
@@ -500,34 +549,20 @@ int runServer(int port){
 						RemoveSocket(&dlist, epfd, skd);
 					}
 				}
-				if(events[i].events & EPOLLOUT){
-					#ifdef DBG
-						printf("Try to write to socket %d\n", fd);
-					#endif
-					
-					// client ready to read data from us
-					res = process_client_write(skd);
-					if(res < 0){ // error
-						if(DBG)
-							printf("Error writing to socket #%d. Remove it.\n", fd);
-						RemoveSocket(&dlist, epfd, skd);
-					}
-				}
 			}
 		}
 		
 		// sort client buffers or fill the buffers to send
 		struct node* ptr = dlist;
-		clientsForProcess = 0; // we will calculate count of clients to further process
 		while(ptr != NULL) {
 			skd = (struct socket_descr*)ptr->data;
 			if(skd->fd != sfd) {
 				// it is not the server socket context
 				#ifdef DBG
-					printf("Try sort client descriptor %d\n", skd->fd);
+					printf("Start process of client socket %d\n", skd->fd);
 				#endif
 				
-			  	res = process_client(skd);
+			  	res = process_client(epfd, skd);
 			  	if(res < 0){
 			  		// received STOP signal. Stop server.
 			  		#ifdef DBG
@@ -544,39 +579,22 @@ int runServer(int port){
 			  		
 			  		ptr = RemoveSocket(&dlist, epfd, skd);
 			  	}
-			  	else {
-			  		int state = skd->context->state;
-			  		if(state != SReadToBuf && state != SSendBuf)
-			  			clientsForProcess++;
-			  		//else
-			  		// 	if(state == SSendBuf){
-			  		// 		#ifdef DBG
-					//			printf("Add socket #%d to epoll\n", skd->fd);
-					//		#endif
-					//		AddEvent(&dlist, epfd, EPOLLOUT, skd);
-			  		// 	}
-			  	}
 			}
 		  	ptr = ptr->next;
 		}
 		
 		#ifdef DBG
-			printf("Finish process all clients\n");
+			printf("Finish process of all clients\n");
 		#endif
 		
 		if(res < 0) break; // received STOP signal
 	}
 	
 	#ifdef DBG
-		printf("Close server\n");
+		printf("Closing server\n");
 	#endif
 	
 	RemoveAllConnections(epfd, &dlist);
-	
-	#ifdef DBG
-		printf("Free events array\n");
-	#endif
-	
 	free(events);
 	
 	#ifdef DBG
