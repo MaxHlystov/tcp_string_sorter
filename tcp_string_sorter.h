@@ -31,8 +31,11 @@ See also test.sh script.
 	struct socket_descr {
 		int fd; // socket descriptor
 		int events; //epoll events assigning for socket (EPOLLIN, EPOLLUOUT)
+		
 		struct sockaddr_in cl_addr; // IP address
 		socklen_t cl_addr_len; // length of IP address
+		
+		int circles; // count of number epoll wait without reading data
 		
 		struct sort_context* context; // for server listen socket == NULL
 	};
@@ -99,7 +102,8 @@ See also test.sh script.
 	
 	// read data from client
 	// return:
-	//	>= 0 if server needs to continue working with client;
+	//	> 0 if server needs to continue working with client;
+	//  = 0 if client end sending
 	//	< 0 if server should close connection with client
 	int process_client_read(struct socket_descr* skd);
 	

@@ -61,6 +61,8 @@ struct socket_descr* AddSocketDescr(struct node** head, int fd, struct sockaddr_
 	else
 		skd->context = NULL;
 	
+	skd->circles = 0;
+	
 	push(head, skd->fd, skd);
 	
 	return skd;
@@ -323,22 +325,25 @@ int process_client_read(struct socket_descr* skd){
 			skd->fd, sc->continue_listen, sc->state);
 	#endif
 	
-	if(!sc->continue_listen) return -1; // close client
+	if(!sc->continue_listen) return 0; // close client
 	
-	if(sc->state != SReadToBuf) return 0; // it should do nothing
+	if(sc->state != SReadToBuf) return 1; // it should do nothing
 	
 	// read data from socket
 	#ifdef DBG
 		printf("SReadToBuf\n");
 	#endif
 	
-	int rb = recv(skd->fd, sc->buf, MAX_BUF, 0);
+	int rb = read(skd->fd, sc->buf, MAX_BUF);
+
 	if(rb <= 0) {
-		if(rb == 0 || errno == EAGAIN){
+		if(skd->circles < 10 && (rb == 0 || errno == EAGAIN)){
 			#ifdef DBG
-				printf("Try read again\n");
+				printf("Try read again rb == %d, circles %d\n", rb, skd->circles);
 			#endif
-			return 0; // try later
+			
+			skd->circles++;
+			return 1; // try later
 		}
 		sc->continue_listen = 0;
 		#ifdef DBG
@@ -347,9 +352,12 @@ int process_client_read(struct socket_descr* skd){
 		
 		return -1; // error. close connection
 	}
+	
 	#ifdef DBG
 		printf("Read %d bytes\n", rb);
 	#endif
+	
+	skd->circles = 0;
 	
 	sc->rb = rb;
 	sc->buf_idx = 0;
@@ -360,7 +368,7 @@ int process_client_read(struct socket_descr* skd){
 		printf("Change to state %d \n", sc->state);
 	#endif
 	
-	return 0;
+	return 1;
 }
 
 
@@ -543,9 +551,12 @@ int runServer(int port){
 					
 					// client ready to send us a data
 					res = process_client_read(skd);
-					if(res < 0){ // error
-						if(DBG)
-							printf("Error reading socket #%d. Remove it.\n", fd);
+					if(res <= 0){ // eof socket of error
+						#ifdef DBG
+							if(res < 0)
+								printf("Error reading socket #%d. Remove it.\n", fd);
+						#endif
+						
 						RemoveSocket(&dlist, epfd, skd);
 					}
 				}

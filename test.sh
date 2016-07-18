@@ -19,8 +19,8 @@ echo "Info: Server started with PID ${PID}"
 # Tests
 
 # Connect and send test string
-END_CONNECTION="OFF\x00"
-TEST_STRING="aabbccddeeffggaabbccddeeffgg\x00"
+END_CONNECTION="OFF\x0"
+TEST_STRING="aabbccddeeffggaabbccddeeffgg\x0"
 RES_GAUGE="ggggffffeeeeddddccccbbbbaaaa"
 RES=`echo -n -e ${TEST_STRING}${END_CONNECTION} | nc 127.0.0.1 $PORT`
 
@@ -31,7 +31,7 @@ then
 fi
 
 # Send stop command to server
-STOP_SERVER="STOP\x00"
+STOP_SERVER="STOP\x0"
 RES=`echo -n -e $STOP_SERVER | nc 127.0.0.1 $PORT`
 
 if [[ -n RES ]]
