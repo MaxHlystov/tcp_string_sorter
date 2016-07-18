@@ -23,8 +23,8 @@ See also test.sh script.
 	
 	#define MAX_EVENTS 100
 	#define MAX_BUF 512
-	#define WAIT_TIMEOUT -1
-	#define DBG 0
+	#define WAIT_TIMEOUT 0
+	#define DBG 1
 
 	const int sort_end = UCHAR_MAX; // max index in sort array
 	
@@ -55,11 +55,11 @@ See also test.sh script.
 	
 	// process states
 	enum States {
-		  SInit // init data to read
+		  SInit // 0 init data to read
 		, SReadToBuf // 1 read data from 
-		, SCheckEnd // 1.5 check if recieved "OFF" message
-		, SSortBuf // 2 sort data in buf
-		, SFillBufFromSort // 3 fill bufer to send
+		, SCheckEnd // 2 check if recieved "OFF" message
+		, SSortBuf // 3 sort data in buf
+		, SFillBufFromSort // 4 fill bufer to send
 		, SSendBuf // 5 send buf to client
 	};
 
