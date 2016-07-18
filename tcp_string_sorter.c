@@ -473,7 +473,7 @@ int runServer(int port){
 	int res = 0;
 
 	#ifdef DBG
-		printf("Start server cicle\n");
+		printf("Start server circle\n");
 	#endif
 	
 	while(1){
