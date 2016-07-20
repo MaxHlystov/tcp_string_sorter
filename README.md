@@ -14,5 +14,4 @@ To start server used:
 Server is not daemon. If you want to start it in background use. For example:  
 	`tcp_string_sorter 55555 &`
 
-For test use:  
-	`test.sh`
+For test use: `test.sh`
