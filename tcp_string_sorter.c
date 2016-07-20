@@ -2,11 +2,16 @@
 	#define _POSIX_C_SOURCE 199310L
 #endif
 
+#ifndef _BSD_SOURCE
+	#define _BSD_SOURCE
+#endif
+
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <sys/epoll.h>
+#include <netinet/in.h>
 #include <netdb.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -16,68 +21,119 @@
 #include <string.h>
 #include <limits.h>
 #include <errno.h>
+#include <stdarg.h>
 
 #include "lib_solution.h"
 #include "tcp_string_sorter.h"
 
-const char* end_msg = "OFF";
-const char* stop_msg = "STOP";
-int end_msg_len;
-int stop_msg_len;
+#ifdef DBG
+	// show indent before log message
+	#define DBG_MAX_INDENT 10
+	#define DBG_INDENT_CHAR '\t'
 	
-struct sort_context* CreateSortContext(){
-	struct sort_context* sc = (struct sort_context*)malloc(sizeof(struct sort_context));
-
-	sc->proc_res = 0; // result of processing
-	sc->buf_idx = 0; // index in buffer, used while sort data
-	sc->sort_idx = 0; // index in sort, used while prepare send_buf to send
-	sc->snd_len = 0; // length of the send buffer
-	sc->rb = 0; // count of have read bytes
-	sc->pos_send = 0; // count of have sent bytes
-	sc->state = SInit; // state of poscess
-	sc->flStartOfTheString = 1; // it is start of the string
-	sc->continue_listen = 1;
+	char dbg_indent_str[DBG_MAX_INDENT+1] = ""; // indent string to show
+	int dbg_indent = 0; // current indent
 	
-	return sc;
-}
+	void dbgAddIndent(int delta){
+		if(delta == 0) return;
+		if(delta < 0){
+			dbg_indent += delta;
+			if(dbg_indent < 0) dbg_indent = 0;
+			dbg_indent_str[dbg_indent] = '\0';
+		}
+		else{
+			int indent = dbg_indent + delta;
+			if(indent >= DBG_MAX_INDENT) delta -= indent-DBG_MAX_INDENT;
+			memset(dbg_indent_str+dbg_indent, DBG_INDENT_CHAR, delta);
+			dbg_indent += delta;
+			dbg_indent_str[dbg_indent] = '\0';
+		}
+	}
+	
+	void dbgShowIndent(){
+		if(dbg_indent == 0) return;
+		printf("%s", dbg_indent_str);
+	}
+	
+	// increase indent before printf message.
+	// or decreas indent after printf message.
+	void dbgPrintf(int delta_indent, const char* format, ...){
+		va_list ap;
+		va_start(ap, format);
+	
+		if(delta_indent < 0) dbgAddIndent(delta_indent);
+		
+		dbgShowIndent();
+		vprintf(format, ap);
+
+		if(delta_indent > 0) dbgAddIndent(delta_indent);
+	}
+#endif
 
 
-struct socket_descr* AddSocketDescr(struct node** head, int fd, struct sockaddr_in* cl_addr,
-			socklen_t cl_addr_len, int create_sort_context)
-{
+struct socket_descr* addSocketDescr(struct str_sorter_server* sss,
+			int fd, struct sockaddr_in* cl_addr, socklen_t cl_addr_len){
 	#ifdef DBG
-		printf("AddSocketDescr #%d\n", fd);
+		dbgPrintf(1, "+AddSocketDescr(%d)\n", fd);
 	#endif
 	
-	struct socket_descr* skd = (struct socket_descr*)malloc(sizeof(struct socket_descr));
-	if(NULL == skd) return NULL;
+	struct socket_descr* skd =
+		(struct socket_descr*)malloc(sizeof(struct socket_descr));
+	if(NULL == skd){
+		#ifdef DBG
+			dbgPrintf(1, "Error memory allocation\n");
+		#endif
+		
+		return NULL;
+	}
 	
 	skd->fd = fd;
+	skd->events = 0;
 	
-	if(NULL != cl_addr) memcpy(&(skd->cl_addr_len), cl_addr, cl_addr_len);
-	
-	if(create_sort_context)
-		skd->context = CreateSortContext();
-	else
-		skd->context = NULL;
+	if(NULL != cl_addr){
+		memcpy(&(skd->addr), cl_addr, cl_addr_len);
+		skd->addr_len = cl_addr_len;
+	}
+	else skd->addr_len = 0;
 	
 	skd->circles = 0;
 	
-	push(head, skd->fd, skd);
+	skd->buf_idx = 0; // index in buffer, used while sort data
+	skd->sort_idx = 0; // index in sort, used while prepare send_buf to send
+	skd->snd_len = 0; // length of the send buffer
+	skd->rb = 0; // count of have read bytes
+	skd->pos_send = 0; // count of have sent bytes
+	skd->state = SInit; // state of poskdess
+	skd->flStartOfTheString = 1; // it is start of the string
+	skd->continue_listen = 1;
+
+	push(&(sss->dlist), skd->fd, skd);
+	
+	#ifdef DBG
+		dbgPrintf(0,
+			"Sort size %lu. Read buffer size %lu. Send buffer size %lu\n",
+			sizeof(skd->sort), sizeof(skd->buf), sizeof(skd->send_buf));
+	#endif
+	
+	#ifdef DBG
+		dbgPrintf(-1, "-AddSocketDescr\n");
+	#endif
 	
 	return skd;
 }
 
 
-int SetEventType(int epfd, int event_code, struct socket_descr* skd, int flAMR){
+int setEventType(struct str_sorter_server* sss, int event_code,
+					struct socket_descr* skd, enum EventOpType flAMR){
 	#ifdef DBG
-		printf("Set event for socket %d with code %d\n", skd->fd, event_code);
+		dbgPrintf(1, "SetEventType(socket=%d, event code= %d, flAMR=%d)\n",
+			skd->fd, event_code, flAMR);
 	#endif
 	
 	// if event code has been set, do nothing
-	if(((skd->events & event_code) > 0) == (flAMR != 2)){
+	if(((skd->events & event_code) > 0) == (flAMR != ETRemove)){
 		#ifdef DBG
-			printf("Event has been set\n");
+			dbgPrintf(-1, "Do not need to change events. Event type has been set\n");
 		#endif
 		return 0;
 	}
@@ -87,7 +143,7 @@ int SetEventType(int epfd, int event_code, struct socket_descr* skd, int flAMR){
 	
 	int op;
 	
-	if(flAMR == 0) {
+	if(flAMR == ETAdd) {
 		// Add new event
 		skd->events = event_code;
 		op = EPOLL_CTL_ADD;
@@ -95,7 +151,7 @@ int SetEventType(int epfd, int event_code, struct socket_descr* skd, int flAMR){
 	else{
 		op = EPOLL_CTL_MOD;
 		
-		if(flAMR == 1){
+		if(flAMR == ETModify){
 			// Modify event type
 			skd->events += event_code;
 		}
@@ -107,477 +163,654 @@ int SetEventType(int epfd, int event_code, struct socket_descr* skd, int flAMR){
 	
 	event.events = skd->events;
 	
-	return epoll_ctl(epfd, op, skd->fd, &event);
+	#ifdef DBG
+		dbgPrintf(-1, "-SetEventType\n");
+	#endif
+	
+	return epoll_ctl(sss->epfd, op, skd->fd, &event);
 }
 
 
-struct node* RemoveSocket(struct node** head, int epfd, struct socket_descr* skd){
+struct node* removeSocketDescr(struct str_sorter_server* sss,
+			struct socket_descr* skd){
 	#ifdef DBG
-		printf("Removing socket #%d\n", skd->fd);
+		dbgPrintf(1, "+removeSocketDescr(%d)\n", skd->fd);
 	#endif
+	
+	if(NULL == skd){
+		#ifdef DBG
+			dbgPrintf(-1, "Socket context is NULL\n");
+		#endif
+		
+		return NULL;
+	}
 	
 	int fd = skd->fd;
 	
 	#ifdef DBG
-		printf("Try to delete event from eopll\n");
+		dbgPrintf(0, "Try to delete event from eopll\n");
 	#endif
 	
 	struct epoll_event event; // cpoll_ctl(DEL) ignored event content but needs it
 	event.events = EPOLLIN;
-	epoll_ctl(epfd, EPOLL_CTL_DEL, fd, &event);
+	epoll_ctl(sss->epfd, EPOLL_CTL_DEL, fd, &event);
 	
 	#ifdef DBG
-		printf("Close soket\n");
+		dbgPrintf(0, "Close soket\n");
 	#endif
 		
 	shutdown(fd, SHUT_RDWR);
 	close(fd);
-	
-	
-	if(NULL != skd->context){
-		#ifdef DBG
-			printf("Try to delete context\n");
-		#endif
-		
-		free(skd->context);
-	}
+
 	#ifdef DBG
-		printf("Try to delete socket description\n");
+		dbgPrintf(0, "Try to delete socket description\n");
 	#endif
 	
 	free(skd);
 	
 	#ifdef DBG
-		printf("Try to delete description from dlist\n");
+		dbgPrintf(0, "Try to delete description from dlist\n");
 	#endif
 	
 	struct node* next = NULL;
-	struct node* deleted = deleteNode(head, fd);
+	struct node* deleted = deleteNode(&(sss->dlist), fd);
 	if(NULL != deleted){
 		#ifdef DBG
-			printf("Try to delete list item\n");
+			dbgPrintf(0, "Try to delete list item\n");
 		#endif
 		
 		next = deleted->next;
 		free(deleted);
 	}
 	
+	#ifdef DBG
+		dbgPrintf(-1, "-removeSocketDescr\n");
+	#endif
+	
 	return next;
 }
 
 
-void RemoveAllConnections(int epfd, struct node** head){
+int processClient(struct str_sorter_server* sss,
+		struct socket_descr* skd){
 	#ifdef DBG
-		printf("Try to remove all connections\n");
+		dbgPrintf(1, "+processClient(socket %d; state %d; continuel_listen %d)\n",
+				skd->fd, skd->state, skd->continue_listen);
+				
 	#endif
 	
-	while(NULL != *head){
-		RemoveSocket(head, epfd, (struct socket_descr*)((*head)->data));
+	if(!skd->continue_listen){
+		#ifdef DBG
+			dbgPrintf(-1, "Do not continue listen\n");
+		#endif
+		return -1; // close client
 	}
 	
-	#ifdef DBG
-		printf("Close epoll descriptor\n");
-	#endif
-	
-	close(epfd);
-}
-
-
-// process client buffers (sort of fill for send)
-// stop working, if recieve "OFF" string
-// return:
-//	0 if server need to continue listen to new clients
-//	< 0 if server need to end working (received STOP message)
-int process_client(int epfd, struct socket_descr* skd){
-	struct sort_context* sc = skd->context;
-	#ifdef DBG
-		printf("Process socket %d. Sort end %d; sort size %lu\n", skd->fd, sort_end, sizeof(sc->sort));
-	#endif
-	
-	if(!sc->continue_listen) return -1; // close client
-
-	switch(sc->state){
+	switch(skd->state){
 	case SInit: // 0 init data to parse new string in buffer
 		#ifdef DBG
-			printf("SInit\n");
+			dbgPrintf(0, "SInit\n");
 		#endif
 		
-		memset(sc->sort, 0, (sort_end+1) * sizeof(unsigned int));
-		if(sc->buf_idx < sc->rb) sc->state = SCheckEnd;
-		else sc->state = SReadToBuf;
-		sc->flStartOfTheString = 1;
+		memset(skd->sort, 0, (sss->sort_end+1) * sizeof(unsigned int));
+		if(skd->buf_idx < skd->rb) skd->state = SCheckEnd;
+		else skd->state = SReadToBuf;
+		skd->flStartOfTheString = 1;
+		break;
+	
+	case SReadToBuf: // 1 read data from
+		#ifdef DBG
+			dbgPrintf(0, "SReadToBuf\n");
+		#endif
 		break;
 		
 	case SCheckEnd: // 2 check if received control message
 		#ifdef DBG
-			printf("SCheckEnd\n");
+			dbgPrintf(0, "SCheckEnd\n");
 		#endif
 		
-		if(sc->buf_idx >= sc->rb)
+		if(skd->buf_idx >= skd->rb)
 			// not start of the string
-			sc->state = SReadToBuf;
+			skd->state = SReadToBuf;
 		else{
-			if(memcmp((sc->buf)+(sc->buf_idx), end_msg, end_msg_len) == 0){
-				sc->continue_listen = 0;
+			if(memcmp((skd->buf)+(skd->buf_idx),
+					sss->end_msg, sss->end_msg_len) == 0){
+				#ifdef DBG
+					dbgPrintf(-1, "Found end msg\n");
+				#endif
+				skd->continue_listen = 0;
 				return 1; // close client
 			}
-			else if(memcmp((sc->buf)+(sc->buf_idx), stop_msg, stop_msg_len) == 0){
-				sc->continue_listen = 0;
+			else if(memcmp((skd->buf)+(skd->buf_idx),
+					sss->stop_msg, sss->stop_msg_len) == 0){
+				#ifdef DBG
+					dbgPrintf(-1, "Found stop msg\n");
+				#endif
+				skd->continue_listen = 0;
 				return -1; // stop server
 			}
-			else sc->state = SSortBuf;
+			else skd->state = SSortBuf;
 		}
-		sc->flStartOfTheString = 0;
+		skd->flStartOfTheString = 0;
 		break;
 
 	case SSortBuf: // 3 sort data in buf
 		#ifdef DBG
-			printf("SSortBuf\n");
+			dbgPrintf(0, "SSortBuf\n");
 		#endif
 		
-		while(sc->buf_idx < sc->rb){
-			if(sc->buf[sc->buf_idx] == '\0') {
+		while(skd->buf_idx < skd->rb){
+			if(skd->buf[skd->buf_idx] == ZERO_CHAR) {
 				#ifdef DBG
-					printf("Find zero char\n");
+					dbgPrintf(0, "Find zero char\n");
 				#endif
 				
-				sc->buf_idx++;
-				sc->sort_idx = sort_end;
-				sc->snd_len = 0;
-				sc->state = SFillBufFromSort;
+				skd->buf_idx++;
+				skd->sort_idx = sss->sort_end;
+				skd->snd_len = 0;
+				skd->state = SFillBufFromSort;
 				break;
 			}
 			
-			unsigned code = (unsigned)(sc->buf[sc->buf_idx]);
+			unsigned code = (unsigned)(skd->buf[skd->buf_idx]);
 			
 			#ifdef DBG
-				printf("  Got code %u, for sort %u\n", code, sc->sort[code]);
+				dbgPrintf(0, "  Got code %u, for sort %u\n", code, skd->sort[code]);
 			#endif
 			
-			sc->sort[code]++;
+			skd->sort[code]++;
 			
 			#ifdef DBG
-				printf("  Set sort to %u\n", sc->sort[code]);
+				dbgPrintf(0, "  Set sort to %u\n", skd->sort[code]);
 			#endif
 				
-			sc->buf_idx++;
+			skd->buf_idx++;
 		}
-		if(sc->state == SFillBufFromSort) break;
+		if(skd->state == SFillBufFromSort) break;
 		
 		#ifdef DBG
-			printf("Not find zero. We need to read again\n");
+			dbgPrintf(0, "Not find zero. We need to read again\n");
 		#endif
 		
-		sc->flStartOfTheString = 0;
-		sc->state = SReadToBuf;
+		skd->flStartOfTheString = 0;
+		skd->state = SReadToBuf;
 		break;
 		
 	case SFillBufFromSort: // 4 fill bufer to send
 		#ifdef DBG
-			printf("SFillBufFromSort\n");
+			dbgPrintf(0, "SFillBufFromSort(sort_idx=%d; snd_len=%d)\n",
+				skd->sort_idx, skd->snd_len);
 		#endif
 		
-		while(sc->sort_idx > 0 && sc->snd_len < MAX_BUF){
-			unsigned int cnt = sc->sort[sc->sort_idx];
+		while(skd->sort_idx > 0 && skd->snd_len < MAX_BUF){
+			unsigned int cnt = skd->sort[skd->sort_idx];
 			if(cnt) {
 				#ifdef DBG
-					printf("    Found char %c with count %u\n",
-							(unsigned char)(sc->sort_idx), cnt);
+					dbgPrintf(0, "Found byte %u with count %u. Idx=%u\n",
+							(unsigned char)(skd->sort_idx), cnt, skd->sort_idx);
 				#endif
 				
-				if(sc->snd_len+cnt >= MAX_BUF-1){
-					cnt = MAX_BUF-1 - sc->snd_len;
-					sc->sort[sc->sort_idx] -= cnt;
+				if(skd->snd_len+cnt >= MAX_BUF-1){
+					cnt = MAX_BUF-1 - skd->snd_len;
+					skd->sort[skd->sort_idx] -= cnt;
 				}
 				
-				memset(sc->send_buf+sc->snd_len,
-					(unsigned char)(sc->sort_idx), cnt);
-				sc->snd_len += cnt;
+				memset(skd->send_buf+skd->snd_len,
+					(unsigned char)(skd->sort_idx), cnt);
+				skd->snd_len += cnt;
 			}
-			sc->sort_idx--;
+			skd->sort_idx--;
 		}
 		
 		#ifdef DBG
-			printf("We filled sort array. Send it. Add socket to epoll out events.\n");
+			dbgPrintf(0, "We filled sort array. Send it. Add socket to epoll out events.\n");
 		#endif
 		
-		if(sc->snd_len < MAX_BUF) sc->send_buf[sc->snd_len] = '\0';
-		sc->state = SSendBuf;
-		sc->pos_send = 0;
-		
-		SetEventType(epfd, EPOLLOUT, skd, 1); // add to epoll out events
+		if(skd->snd_len < MAX_BUF) skd->send_buf[skd->snd_len] = ZERO_CHAR;
+		skd->state = SSendBuf;
+		skd->pos_send = 0;
 		
 		break;
+		
+	case SSendBuf: // 5 send buf to client
+		#ifdef DBG
+			dbgPrintf(0, "SSendBuf\n");
+		#endif
+		break;
+	
 	}
-	
+
 	#ifdef DBG
-		printf("Finish process with state %d\n", sc->state);
+		dbgPrintf(-1, "-processClient(state %d)\n", skd->state);
 	#endif
-	
+
 	return 0;
 }
 
 
-int process_client_read(struct socket_descr* skd){
-	struct sort_context* sc = skd->context;
+int readClient(struct str_sorter_server* sss, struct socket_descr* skd){
 	#ifdef DBG
-		printf("process_client_read #%d, continue flag %d, state: %d\n",
-			skd->fd, sc->continue_listen, sc->state);
+		dbgPrintf(1, "+readClient(socket %d;  continue flag %d; state %d)\n",
+			skd->fd, skd->continue_listen, skd->state);
 	#endif
 	
-	if(!sc->continue_listen) return 0; // close client
+	if(!skd->continue_listen){
+		#ifdef DBG
+			dbgPrintf(-1, "Don't continue listen\n");
+		#endif
+		return 1; // close client without error
+	}
 	
-	if(sc->state != SReadToBuf) return 1; // it should do nothing
+	if(skd->state != SReadToBuf){
+		#ifdef DBG
+			dbgPrintf(-1, "State is not SReadToBuf\n");
+		#endif
+		return 0; // it should do nothing
+	}
 	
 	// read data from socket
 	#ifdef DBG
-		printf("SReadToBuf\n");
+		dbgPrintf(0, "SReadToBuf\n");
 	#endif
 	
-	int rb = read(skd->fd, sc->buf, MAX_BUF);
+	int rb = recv(skd->fd, skd->buf, MAX_BUF, 0);
 
+	// if(rb == 0){
+	// 	#ifdef DBG
+	// 		dbgPrintf(-1, "Need to close connection: rb == 0\n");
+	// 	#endif
+	// 	return 1; // close connection
+	// }
 	if(rb <= 0) {
 		if(skd->circles < 10 && (rb == 0 || errno == EAGAIN)){
 			#ifdef DBG
-				printf("Try read again rb == %d, circles %d\n", rb, skd->circles);
+				dbgPrintf(-1, "Try read again rb == %d, circles %d\n", rb, skd->circles);
 			#endif
 			
 			skd->circles++;
-			return 1; // try later
+			return 0; // try later
 		}
-		sc->continue_listen = 0;
+		skd->continue_listen = 0;
 		#ifdef DBG
-			printf("Error readin\n");
+			dbgPrintf(-1, "Error reading\n");
 		#endif
 		
 		return -1; // error. close connection
 	}
 	
 	#ifdef DBG
-		printf("Read %d bytes\n", rb);
+		dbgPrintf(0, "Read %d: ", rb);
+		for(int i=0; i<rb; ++i)
+			printf("%d ", skd->buf[i]);
+		dbgPrintf(0, "\n", rb);
 	#endif
 	
 	skd->circles = 0;
 	
-	sc->rb = rb;
-	sc->buf_idx = 0;
-	if(sc->flStartOfTheString) sc->state = SCheckEnd;
-	else sc->state = SSortBuf;
+	skd->rb = rb;
+	skd->buf_idx = 0;
+	if(skd->flStartOfTheString) skd->state = SCheckEnd;
+	else skd->state = SSortBuf;
 	
 	#ifdef DBG
-		printf("Change to state %d \n", sc->state);
+		dbgPrintf(-1, "-readClient(state %d, flStartOfTheString %d)\n",
+				skd->state, skd->flStartOfTheString);
 	#endif
 	
-	return 1;
-}
-
-
-int process_client_write(int epfd, struct socket_descr* skd){
-	struct sort_context* sc = skd->context;
-	#ifdef DBG
-		printf("process_client_write #%d, continue flag %d, state: %d\n",
-			skd->fd, sc->continue_listen, sc->state);
-	#endif
-	
-	if(!sc->continue_listen) return -1; // close client
-	
-	if(sc->state != SSendBuf) return 0; // it should do nothing
-	
-	// send send_buf to client
-	#ifdef DBG
-		printf("SSendBuf\n");
-	#endif
-	
-	if(sc->pos_send < sc->snd_len){
-		int sent_cnt =
-			send(skd->fd, sc->send_buf + sc->pos_send, sc->snd_len, 0);
-		if(sent_cnt < 0){
-			if(sent_cnt == 0 || errno == EAGAIN) return 0; // try later
-			sc->continue_listen = 0;
-			return -1;
-		}
-		#ifdef DBG
-			printf("Sent %d bytes\n", sent_cnt);
-		#endif
-		
-		sc->pos_send += sent_cnt;
-	}
-	
-	if(sc->pos_send >= sc->snd_len){
-		#ifdef DBG
-			printf("Sent all data. Remove socket from epoll out events.\n");
-		#endif
-		
-		sc->snd_len = 0;
-		sc->state = SInit;
-		
-		// remove from epoll out events
-		SetEventType(epfd, EPOLLOUT, skd, 2); 
-	}
 	return 0;
 }
 
 
-int runServer(int port){
-	struct sockaddr_in serveraddr;
-	
+int writeClient(struct str_sorter_server* sss, struct socket_descr* skd){
 	#ifdef DBG
-		printf("Server works on port %d\n", port);
+		dbgPrintf(1, "writeClient(socket %d; continue flag %d; state: %d)\n",
+			skd->fd, skd->continue_listen, skd->state);
 	#endif
 	
-	int sfd = socket(AF_INET, SOCK_STREAM, 0);
-	if(sfd < 0){
-		printf("Error connection socket\n");
+	if(!skd->continue_listen || skd->state != SSendBuf){
+		#ifdef DBG
+			dbgPrintf(-1, "Don't continue writing\n");
+		#endif
+		return 1; // end write
+	}
+	
+	// send send_buf to client
+	#ifdef DBG
+		dbgPrintf(0, "SSendBuf\n");
+	#endif
+	
+	if(skd->pos_send < skd->snd_len){
+		int sent_cnt =
+			send(skd->fd, skd->send_buf + skd->pos_send, skd->snd_len, 0);
+		if(sent_cnt < 0){
+			if(sent_cnt == 0 || errno == EAGAIN){
+				#ifdef DBG
+					dbgPrintf(0, "Try to read next time\n");
+				#endif
+				return 0; // try later
+			}
+			skd->continue_listen = 0;
+			#ifdef DBG
+				dbgPrintf(-1, "Error writing %d\n", sent_cnt);
+			#endif
+			return -1;
+		}
+		#ifdef DBG
+			dbgPrintf(0, "Sent %d bytes\n", sent_cnt);
+		#endif
+		
+		skd->pos_send += sent_cnt;
+	}
+	
+	if(skd->pos_send >= skd->snd_len){
+		#ifdef DBG
+			dbgPrintf(-1, "Sent all data. Remove socket from epoll out events.\n");
+		#endif
+		
+		skd->snd_len = 0;
+		skd->state = SInit;
+		
+		// remove from epoll out events
+		return 1;
+	}
+	
+	#ifdef DBG
+		dbgPrintf(-1, "-writeClient(try to do additional write )\n");
+	#endif
+		
+	return 0;
+}
+
+
+struct str_sorter_server* createServer(const char* ip_str, const int port){
+	#ifdef DBG
+		dbgPrintf(1, "+createServer(port %d)\n", port);
+	#endif
+	
+	struct str_sorter_server* sss =
+		(struct str_sorter_server*)malloc(sizeof(struct str_sorter_server));
+
+	sss->end_msg = OFF_MSG;
+	sss->stop_msg = STOP_MSG;
+	sss->end_msg_len = strlen(sss->end_msg);
+	sss->stop_msg_len = strlen(sss->stop_msg);
+	sss->sort_end = UCHAR_MAX;
+	
+	sss->epfd = 0;
+	sss->events = NULL;
+	sss->maxevents = MAX_EVENTS;
+	
+	sss->port = port;
+	sss->fd = 0;
+	
+	memset(&(sss->addr), 0, sizeof(struct sockaddr_in));
+	(sss->addr).sin_family = AF_INET;
+	(sss->addr).sin_port = htons((unsigned short)(sss->port));
+	
+	if(NULL != ip_str){
+		if(inet_aton(ip_str,
+				(struct in_addr*)&((sss->addr).sin_addr.s_addr)) == 0){
+        	#ifdef DBG
+				dbgPrintf(-1, "Error: invalid address: %s\n", ip_str);
+			#endif
+        	free(sss);
+        	return NULL;
+    	}
+	}
+	else
+		(sss->addr).sin_addr.s_addr = INADDR_ANY;
+	
+	sss->addr_len = sizeof(sss->addr);
+	
+	sss->dlist = NULL;
+	
+	#ifdef DBG
+		dbgPrintf(0, "Address: %s:%d\n", ip_str, port);
+		dbgPrintf(0, "End client message: %s.\n", sss->end_msg);
+		dbgPrintf(0, "Stop server message: %s.\n", sss->stop_msg);
+		dbgPrintf(0, "Sort end: %lu\n", sss->sort_end);
+	#endif
+	
+	#ifdef DBG
+		dbgPrintf(-1, "-createServer\n");
+	#endif
+	
+	return sss;
+}
+
+
+int runServer(struct str_sorter_server* sss){
+	#ifdef DBG
+		dbgPrintf(1, "runServer\n");
+	#endif
+	
+	if(NULL == sss){
+		#ifdef DBG
+			dbgPrintf(-1, "Error: server has not been created\n");
+		#else
+			printf("Error: server has not been created\n");
+		#endif
+
 		return -1;
 	}
 	
-	memset(&serveraddr, 0, sizeof(serveraddr));
-	serveraddr.sin_family = AF_INET;
-	serveraddr.sin_addr.s_addr = INADDR_ANY;
-	serveraddr.sin_port = htons((unsigned short)port);
+	if(NULL != sss->events || sss->epfd != 0 || sss->fd != 0){
+		#ifdef DBG
+			dbgPrintf(-1, "Error: server has been run\n");
+		#else
+			printf("Error: server has been run\n");
+		#endif
+		
+		return -1;
+	}
+	
+	sss->fd = socket(AF_INET, SOCK_STREAM, 0);
+	if(sss->fd < 0){
+		#ifdef DBG
+			dbgPrintf(-1, "Error connection socket\n");
+		#else
+			printf("Error connection socket\n");
+		#endif
 
-	if(bind(sfd, (struct sockaddr *) &serveraddr, sizeof(serveraddr)) < 0){
-		printf("ERROR on binding\n");
+		return -1;
+	}
+
+	if(bind(sss->fd, (struct sockaddr *) &(sss->addr), sss->addr_len) < 0){
+		#ifdef DBG
+			dbgPrintf(-1, "Error on binding\n");
+		#else
+			printf("Error on binding\n");
+		#endif
+		
 		return -1;
 	}
 		
-	set_nonblock(sfd);
+	set_nonblock(sss->fd);
 	
-	int epfd; // epoll descriptor
-	struct node* dlist = NULL; // head of socket descriptions
-	struct epoll_event* events = (struct epoll_event*)malloc(MAX_EVENTS*sizeof(struct epoll_event)); // buffer to events wait
-	
-	epfd = epoll_create(8);
-	if(epfd < 0){
-		perror("Epoll create");
-	}
-	
-	#ifdef DBG
-		printf("Epoll create\n");
-	#endif
-	
-	// add server description to epoll
-	struct socket_descr* server_skd =
-		AddSocketDescr(&dlist, sfd, &serveraddr, sizeof(serveraddr), 0);
-	SetEventType(epfd, EPOLLIN, server_skd, 0);
-	
-	#ifdef DBG
-		printf("Created and added server socket\n");
-	#endif
-	
-	if(listen(sfd, SOMAXCONN) < 0){
-		perror("Error listening");
+	sss->epfd = epoll_create(10);
+	if(sss->epfd < 0){
+		#ifdef DBG
+			dbgPrintf(-1, "Error epoll create\n");
+		#else
+			printf("Error epoll create\n");
+		#endif
 		return -1;
 	}
 	
 	#ifdef DBG
-		printf("Started to listen\n");
+		dbgPrintf(0, "Epoll create\n");
 	#endif
 	
-	// used in while
-	struct sockaddr_in cl_addr; 
-	socklen_t cl_addr_len;
+	// add server description to epoll
+	struct epoll_event event;
+	event.events = EPOLLIN;
+	event.data.ptr = sss;
+	if(epoll_ctl(sss->epfd, EPOLL_CTL_ADD, sss->fd, &event)){
+		#ifdef DBG
+			dbgPrintf(-1, "Error addint socket descriptor to epoll\n");
+		#else
+			printf("Error addint socket descriptor to epoll\n");
+		#endif
+		
+		return -1;
+	}
+	
+	#ifdef DBG
+		dbgPrintf(0, "Created and added server socket\n");
+	#endif
+	
+	if(listen(sss->fd, SOMAXCONN) < 0){
+		#ifdef DBG
+			dbgPrintf(-1, "Error listening\n");
+		#else
+			printf("Error listening\n");
+		#endif
+		
+		return -1;
+	}
+	
+	#ifdef DBG
+		dbgPrintf(0, "Started to listen\n");
+	#endif
+	
+	// create array for epoll events
+	sss->events =
+		(struct epoll_event*)malloc(sss->maxevents * sizeof(struct epoll_event));
+	if(NULL == sss->events){	
+		#ifdef DBG
+			dbgPrintf(-1, "Error memory allocation for events array\n");
+		#else
+			printf("Error memory allocation for events array\n");
+		#endif
+		
+		return -1;
+	}
+	
+	// used in main circle
+	struct sockaddr_in cl_addr;
+	socklen_t cl_addr_len = sizeof(struct sockaddr_in);
+	int fd;
 	struct socket_descr* skd = NULL;
 	int res = 0;
-
+	int we_need_sort = 0; // exists sort context for feather sort
+	int wait_timeout = WAIT_TIMEOUT;
+	
 	#ifdef DBG
-		printf("Start server circle\n");
+		dbgPrintf(0, "Start server circle\n");
 	#endif
 	
 	while(1){
-		int num = epoll_wait(epfd, events, MAX_EVENTS, WAIT_TIMEOUT);
+		wait_timeout = we_need_sort == 0 ? WAIT_TIMEOUT : 0;
+		#ifdef DBG
+			dbgPrintf(0, "Epoll_wait timeout = %d\n", wait_timeout);
+		#endif
+		
+		int num = epoll_wait(sss->epfd, sss->events,
+			sss->maxevents, wait_timeout);
 		if(num < 0){
-			perror("Epoll wait");
+			#ifdef DBG
+				dbgPrintf(-1, "Epoll wait\n");
+			#else
+				printf("Epoll wait\n");
+			#endif
+			
 			return -1;
 		}
 		
 		#ifdef DBG
-			printf("Get %d events from epoll_wait() call\n", num);
+			dbgPrintf(0, "Get %d events from epoll_wait() call\n", num);
 		#endif
 		
 		// process events
 		for(int i = 0; i < num; ++i){
-			skd = (struct socket_descr*)events[i].data.ptr;
-			int fd = skd->fd;
-			if(fd == sfd) {
+			if(sss->events[i].data.ptr == sss) {
 				// new client
 				#ifdef DBG
-					printf("New incoming connection. Try to accept it\n");
+					dbgPrintf(0, "New incoming connection. Try to accept it\n");
 				#endif
 				
-				cl_addr_len = sizeof(struct sockaddr_in);
-				fd = accept(sfd, (struct sockaddr*)&cl_addr, &cl_addr_len);
+				fd = accept(sss->fd, (struct sockaddr*)&cl_addr, &cl_addr_len);
 				if(fd < 0){
 					perror("Error accepting incoming connection");
 				}
 				else{
 					#ifdef DBG
-						printf("Get incoming connection descriptor %d\n", fd);
+						dbgPrintf(0, "Accepted descriptor %d\n", fd);
 					#endif
 					
 					set_nonblock(fd);
 					
 					// add server description to dlist
-					skd = AddSocketDescr(&dlist, fd, &cl_addr, cl_addr_len, 1);
+					skd = addSocketDescr(sss, fd, &cl_addr, cl_addr_len);
+					if(NULL == skd) continue;
+					
 					// add epoll wait for read from client
-					SetEventType(epfd, EPOLLIN, skd, 0);
+					setEventType(sss, EPOLLIN, skd, ETAdd);
 				}
 			}
 			else {
+				skd = (struct socket_descr*)((sss->events)[i].data.ptr);
+				fd = skd->fd;
+				
 				#ifdef DBG
-					printf("Epoll event %d\n", events[i].events);
+					dbgPrintf(0, "Epoll event %d\n", sss->events[i].events);
 				#endif
 				
 				// Write events
-				if(events[i].events & EPOLLOUT){
+				if(sss->events[i].events & EPOLLOUT){
 					#ifdef DBG
-						printf("Try to write to socket %d\n", fd);
+						dbgPrintf(0, "Try to write to socket %d\n", fd);
 					#endif
 					
 					// client ready to read data from us
-					res = process_client_write(epfd, skd);
-					if(res < 0){ // error
-						if(DBG)
-							printf("Error writing to socket #%d. Remove it.\n", fd);
-						RemoveSocket(&dlist, epfd, skd);
+					res = writeClient(sss, skd);
+					if(res > 0) setEventType(sss, EPOLLOUT, skd, ETRemove);
+					else if(res < 0){ // error
+						#ifdef DBG
+							dbgPrintf(0, "Error writing to socket #%d. Remove it.\n", fd);
+						#endif
+						
+						removeSocketDescr(sss, skd);
 					}
 				}
 				
 				// Read events
-				if(events[i].events & EPOLLIN){
+				if((sss->events)[i].events & EPOLLIN){
 					#ifdef DBG
-						printf("Try to read from socket %d\n", fd);
+						dbgPrintf(0, "Try to read from socket %d\n", fd);
 					#endif
 					
 					// client ready to send us a data
-					res = process_client_read(skd);
-					if(res <= 0){ // eof socket of error
+					res = readClient(sss, skd);
+					if(res != 0){ // eof socket or error
 						#ifdef DBG
 							if(res < 0)
-								printf("Error reading socket #%d. Remove it.\n", fd);
+								dbgPrintf(0, "Error reading socket #%d. Remove it.\n", fd);
 						#endif
 						
-						RemoveSocket(&dlist, epfd, skd);
+						removeSocketDescr(sss, skd);
 					}
 				}
 			}
 		}
 		
 		// sort client buffers or fill the buffers to send
-		struct node* ptr = dlist;
+		res = 0; // reset 
+		we_need_sort = 0;
+		struct node* ptr = sss->dlist;
 		while(ptr != NULL) {
 			skd = (struct socket_descr*)ptr->data;
-			if(skd->fd != sfd) {
+			if(skd->fd != sss->fd) {
 				// it is not the server socket context
 				#ifdef DBG
-					printf("Start process of client socket %d\n", skd->fd);
+					dbgPrintf(0, "Start process of client socket %d\n", skd->fd);
 				#endif
 				
-			  	res = process_client(epfd, skd);
+			  	res = processClient(sss, skd);
 			  	if(res < 0){
 			  		// received STOP signal. Stop server.
 			  		#ifdef DBG
-						printf("Receiev STOP signal. End work.\n");
+						dbgPrintf(0, "Receiev STOP signal. End work.\n");
 					#endif
 					
 			  		break;
@@ -585,45 +818,84 @@ int runServer(int port){
 			  	if(res > 0){
 			  		// received OFF signal. Close client connection.
 			  		#ifdef DBG
-						printf("Client send OFF signal. Close client connection\n");
+						dbgPrintf(0,
+							"Client send OFF signal. Close client connection\n");
 					#endif
 			  		
-			  		ptr = RemoveSocket(&dlist, epfd, skd);
+			  		ptr = removeSocketDescr(sss, skd);
 			  	}
+			  	// all right
+			  	if(skd->state == SSendBuf)
+			  		// add socket to epoll out events
+			  		setEventType(sss, EPOLLOUT, skd, ETModify);
+			  	else if(skd->state != SReadToBuf)
+			  		//we will not wait for epoll events cose we have enough work
+			  		we_need_sort=1;
+
 			}
-		  	ptr = ptr->next;
+		  	if(ptr) ptr = ptr->next;
 		}
 		
 		#ifdef DBG
-			printf("Finish process of all clients\n");
+			dbgPrintf(0, "Finish process of all clients\n");
 		#endif
 		
 		if(res < 0) break; // received STOP signal
 	}
-	
+
 	#ifdef DBG
-		printf("Closing server\n");
-	#endif
-	
-	RemoveAllConnections(epfd, &dlist);
-	free(events);
-	
-	#ifdef DBG
-		printf("Server stoped working\n");
+		dbgPrintf(-1, "-runServer\n");
 	#endif
 	
     return 0;
 }
 
+
+void removeServer(struct str_sorter_server* sss){
+	#ifdef DBG
+		dbgPrintf(1, "+removeServer\n");
+	#endif
+	
+	if(NULL != sss){
+		while(NULL != sss->dlist){
+			removeSocketDescr(sss, (struct socket_descr*)(sss->dlist->data));
+		}
+		
+		shutdown(sss->fd, SHUT_RDWR);
+		close(sss->fd);
+		
+		close(sss->epfd);
+		
+		if(sss->events) free(sss->events);
+		free(sss);
+	}
+
+	#ifdef DBG
+		dbgPrintf(-1, "-removeServer\n");
+	#endif
+}
+
+
 int main(int argc, char** argv){
 	
 	if(argc < 2){
-		printf("Specify port to listen to\n");
+		printf("Use: tcp_string_sorter [ip adress] port\n");
 		return -1;
 	}
 	
-	end_msg_len = strlen(end_msg);
-	stop_msg_len = strlen(stop_msg);
+	int port = 0;
+	char* address = NULL;
 	
-	return runServer(atoi(argv[1]));
+	if(argc == 2) port = atoi(argv[1]);
+	else{
+		address = argv[1];
+		port = atoi(argv[2]);
+	}
+	
+	struct str_sorter_server* sss = createServer(address, port);
+	if(NULL == sss) return -1;
+	int res = runServer(sss);
+	removeServer(sss);
+	
+	return res;
 }
