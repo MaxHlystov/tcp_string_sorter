@@ -11,7 +11,7 @@ To start server use:
 	where `ip address` (optional) is ip address of server;  
 	`port_number` is port to listen.
 
-Server is not daemon. If you want to start it in background use & character. For example:  
+Server is not a daemon. If you want to start it in background, use '&' character. For example:  
 	`tcp_string_sorter 55555 &`
 
-For test use: `test.sh`
+For doing tests use: `test.sh`
