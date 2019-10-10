@@ -6,7 +6,7 @@ Connection with client finished if server gives '*OFF*' string (with '\n' at the
 
 To stop server send to it string '*STOP*' (with '\n' at the end).
 
-To start server used:  
+To start server use:  
 	`tcp_string_sorter [ip address] port_number`,  
 	where `ip address` (optional) is ip address of server;  
 	`port_number` is port to listen.
